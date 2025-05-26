@@ -63,7 +63,6 @@ def load_token():
         with open(TOKEN_FILE, 'rb') as token:
             return pickle.load(token)
     return None
-
 def authorize():
     """Avtorizacija z Google OAuth 2.0 z izboljšanim error handlingom"""
     creds = None
@@ -94,7 +93,9 @@ def authorize():
         except Exception as refresh_error:
             logger.error(f"Napaka pri osveževanju žetona: {refresh_error}")
             st.error("Prijava je potekla. Prosimo, prijavite se znova.")
-            os.remove(TOKEN_FILE)  # Počistimo neveljaven žeton
+            if os.path.exists(TOKEN_FILE):
+                os.remove(TOKEN_FILE)
+            st.session_state['token_loaded'] = False
 
     # 4. Nova avtorizacija
     try:
@@ -104,45 +105,50 @@ def authorize():
             redirect_uri=REDIRECT_URI
         )
         
-        # Dodatne možnosti za zanesljivejšo avtorizacijo
         auth_url, state = flow.authorization_url(
             prompt='consent',
             access_type='offline',
             include_granted_scopes='true'
         )
         
-        st.session_state['oauth_state'] = state  # Shranimo state za preverjanje
+        st.session_state['oauth_state'] = state
 
-        # Prikaz uporabniškega vmesnika za avtorizacijo
-        with st.container():
+        # Display UI for manual code entry
+        with st.form("auth_form"):
             st.markdown(f"""
             ### 🔐 Google Prijava  
             1. [Kliknite za prijavo]({auth_url})  
             2. Dovolite dostop do Google Drive  
-            3. Prilepite avtorizacijsko kodo:  
+            3. Kopirajte kodo iz URLja (po ?code=...)  
+            4. Prilepite kodo spodaj:  
             """)
             
             code = st.text_input("Avtorizacijska koda", key="auth_code")
+            submitted = st.form_submit_button("Potrdi kodo")
             
-            if code:
-                if st.session_state.get('oauth_state') != state:
-                    st.error("Neznana napaka pri avtorizaciji. Poskusite znova.")
-                    return None
-                
+            if submitted and code:
                 try:
+                    # Verify state first
+                    if st.session_state.get('oauth_state') != state:
+                        st.error("Neznana napaka pri avtorizaciji. Poskusite znova.")
+                        return None
+                    
+                    # Exchange code for token
                     flow.fetch_token(code=code)
                     creds = flow.credentials
                     save_token(creds)
                     logger.info("Uspešna avtorizacija")
                     st.session_state['auth_success'] = True
-                    st.experimental_rerun()
+                    st.rerun()
                 except Exception as fetch_error:
                     logger.error(f"Napaka pri pridobivanju žetona: {fetch_error}")
-                    st.error("Neveljavna avtorizacijska koda. Poskusite znova.")
+                    st.error("Neveljavna avtorizacijska koda. Preverite ali je koda pravilna in še veljavna.")
     
     except Exception as auth_error:
         logger.critical(f"Kritična napaka v avtorizaciji: {auth_error}")
         st.error("Sistemska napaka pri prijavi. Prosimo, poskusite kasneje.")
+        if 'oauth_state' in st.session_state:
+            del st.session_state['oauth_state']
     
     return None
 
