@@ -9,36 +9,35 @@ from google_auth_oauthlib.flow import Flow
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseDownload
 import logging
+import streamlit as st
 from dotenv import load_dotenv
+import google.auth.transport.requests
+from google_auth_oauthlib.flow import Flow
 
-# ---- KONFIG ----
-load_dotenv()
 
-CLIENT_ID = os.getenv("CLIENT_ID")
-CLIENT_SECRET = os.getenv("CLIENT_SECRET")
+# PRODUKCIJSKA KONFIGURACIJA
+CLIENT_ID = st.secrets["google"]["client_id"]
+CLIENT_SECRET = st.secrets["google"]["client_secret"]
+REDIRECT_URI = st.secrets["google"]["redirect_uri"]
 
 CLIENT_SECRET_CONFIG = {
    "web": {
     "client_id": CLIENT_ID,
-    "project_id": "map2id",
+    "project_id": st.secrets["google"]["project_id"],
     "auth_uri": "https://accounts.google.com/o/oauth2/auth",
     "token_uri": "https://oauth2.googleapis.com/token",
     "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
     "client_secret": CLIENT_SECRET,
-    "redirect_uris": [
-        "https://map2id.streamlit.app",  # Produkcija
-        "http://localhost:8501"  # Lokalni razvoj
-    ],
-    "javascript_origins": [
-        "https://map2id.streamlit.app",
-        "http://localhost:8501"
-    ]
+    "redirect_uris": [REDIRECT_URI],  # SAMO PRODUKCIJSKI URI
+    "javascript_origins": [REDIRECT_URI.split('//')[1].split('/')[0]]
   }
 }
 
 SCOPES = ['https://www.googleapis.com/auth/drive.readonly']
 TOKEN_FILE = 'token.pkl'
-REDIRECT_URI = 'https://map2id.streamlit.app'
+
+# Preverite, da je REDIRECT_URI popolnoma enak kot v Google Console
+st.write(f"Production Redirect URI: {REDIRECT_URI}") 
 
 # ---- Logging ----
 logging.basicConfig(level=logging.INFO)
@@ -59,34 +58,86 @@ def load_token():
     return None
 
 def authorize():
-    creds = load_token()
-    if not creds or not creds.valid:
-        if creds and creds.expired and creds.refresh_token:
+    """Avtorizacija z Google OAuth 2.0 z izboljšanim error handlingom"""
+    creds = None
+    
+    # 1. Poskus naložitve obstoječega žetona
+    try:
+        creds = load_token()
+        if creds:
+            st.session_state['token_loaded'] = True
+    except Exception as e:
+        logger.error(f"Napaka pri nalaganju žetona: {e}")
+        st.error("Napaka pri nalaganju shranjenih poverilnic")
+        st.session_state['token_loaded'] = False
+
+    # 2. Preverjanje veljavnosti žetona
+    if creds and creds.valid:
+        logger.info("Uporabljam veljaven žeton")
+        return creds
+
+    # 3. Osvežitev poteklega žetona
+    if creds and creds.expired and creds.refresh_token:
+        try:
             creds.refresh(google.auth.transport.requests.Request())
-        else:
-            flow = Flow.from_client_config(
-                CLIENT_SECRET_CONFIG,
-                scopes=SCOPES
-            )
-            flow.redirect_uri = REDIRECT_URI
-            auth_url, _ = flow.authorization_url(prompt='consent', access_type='offline')
+            save_token(creds)
+            logger.info("Žeton uspešno osvežen")
+            st.experimental_rerun()
+            return creds
+        except Exception as refresh_error:
+            logger.error(f"Napaka pri osveževanju žetona: {refresh_error}")
+            st.error("Prijava je potekla. Prosimo, prijavite se znova.")
+            os.remove(TOKEN_FILE)  # Počistimo neveljaven žeton
+
+    # 4. Nova avtorizacija
+    try:
+        flow = Flow.from_client_config(
+            CLIENT_SECRET_CONFIG,
+            scopes=SCOPES,
+            redirect_uri=REDIRECT_URI
+        )
+        
+        # Dodatne možnosti za zanesljivejšo avtorizacijo
+        auth_url, state = flow.authorization_url(
+            prompt='consent',
+            access_type='offline',
+            include_granted_scopes='true'
+        )
+        
+        st.session_state['oauth_state'] = state  # Shranimo state za preverjanje
+
+        # Prikaz uporabniškega vmesnika za avtorizacijo
+        with st.container():
             st.markdown(f"""
-                ### 🔐 Prijava
-                1. [Klikni za prijavo v Google]({auth_url})
-                2. Dovoli dostop do Google Drive
-                3. Prilepi kodo tukaj:
+            ### 🔐 Google Prijava  
+            1. [Kliknite za prijavo]({auth_url})  
+            2. Dovolite dostop do Google Drive  
+            3. Prilepite avtorizacijsko kodo:  
             """)
-            code = st.text_input("🔑 Avtentikacijska koda")
+            
+            code = st.text_input("Avtorizacijska koda", key="auth_code")
+            
             if code:
+                if st.session_state.get('oauth_state') != state:
+                    st.error("Neznana napaka pri avtorizaciji. Poskusite znova.")
+                    return None
+                
                 try:
                     flow.fetch_token(code=code)
                     creds = flow.credentials
                     save_token(creds)
+                    logger.info("Uspešna avtorizacija")
+                    st.session_state['auth_success'] = True
                     st.experimental_rerun()
-                except Exception as e:
-                    st.error(f"Napaka pri pridobivanju žetona: {e}")
-                    return None
-    return creds
+                except Exception as fetch_error:
+                    logger.error(f"Napaka pri pridobivanju žetona: {fetch_error}")
+                    st.error("Neveljavna avtorizacijska koda. Poskusite znova.")
+    
+    except Exception as auth_error:
+        logger.critical(f"Kritična napaka v avtorizaciji: {auth_error}")
+        st.error("Sistemska napaka pri prijavi. Prosimo, poskusite kasneje.")
+    
+    return None
 
 # ---- CSV UPLOAD ----
 with st.expander("ℹ️ Navodila za uporabo", expanded=False):
