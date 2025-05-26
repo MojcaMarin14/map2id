@@ -8,6 +8,8 @@ from googleapiclient.discovery import build
 from streamlit.components.v1 import html
 import os
 from dotenv import load_dotenv
+from google_auth_oauthlib.flow import Flow
+import json
 
 # ---- CONFIG ----
 CLIENT_SECRET_FILE = 'credentials.json'
@@ -39,13 +41,26 @@ def authorize():
         if creds and creds.expired and creds.refresh_token:
             creds.refresh(google.auth.transport.requests.Request())
         else:
-            flow = Flow.from_client_secrets_file(
-                CLIENT_SECRET_FILE,
+            client_config = {
+                "web": {
+                    "client_id": st.secrets["google"]["client_id"],
+                    "project_id": st.secrets["google"]["project_id"],
+                    "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+                    "token_uri": "https://oauth2.googleapis.com/token",
+                    "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
+                    "client_secret": st.secrets["google"]["client_secret"],
+                    "redirect_uris": ["http://localhost:8501"],
+                    "javascript_origins": ["http://localhost:8501"]
+                }
+            }
+
+            flow = Flow.from_client_config(
+                client_config,
                 scopes=SCOPES,
                 redirect_uri='http://localhost:8501/'
             )
             auth_url, _ = flow.authorization_url(prompt='consent')
-            st.write("🔐 [Klikni tukaj za prijavo z Google računom](%s)" % auth_url)
+            st.write(f"🔐 [Klikni tukaj za prijavo z Google računom]({auth_url})")
             code = st.text_input("🔑 Po prijavi prilepi tukjer 'code' iz URL")
             if code:
                 flow.fetch_token(code=code)
