@@ -6,14 +6,18 @@ import google.auth.transport.requests
 from google_auth_oauthlib.flow import Flow
 from googleapiclient.discovery import build
 from streamlit.components.v1 import html
+import os
+from dotenv import load_dotenv
 
 # ---- CONFIG ----
 CLIENT_SECRET_FILE = 'credentials.json'
 SCOPES = ['https://www.googleapis.com/auth/drive']
 TOKEN_FILE = 'token.pkl'
 
-CLIENT_ID = "tvoj-client-id.apps.googleusercontent.com"
-API_KEY = "tvoj-api-key"
+load_dotenv()
+CLIENT_ID = os.getenv("CLIENT_ID")
+API_KEY = os.getenv("API_KEY")
+
 
 st.set_page_config(page_title="Preimenovanje map v Drive", page_icon="📁")
 st.title("📁 Google Drive: Preimenovanje map po šifrah")

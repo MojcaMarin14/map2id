@@ -1,3 +1,4 @@
-.history/
 credentials.json
 token.pkl
+.history
+.env
