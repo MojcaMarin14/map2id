@@ -18,21 +18,21 @@ CLIENT_ID = os.getenv("CLIENT_ID")
 CLIENT_SECRET = os.getenv("CLIENT_SECRET")
 
 CLIENT_SECRET_CONFIG = {
-    "web": {
-        "client_id": CLIENT_ID,
-        "project_id": "map2id",
-        "auth_uri": "https://accounts.google.com/o/oauth2/auth",
-        "token_uri": "https://oauth2.googleapis.com/token",
-        "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
-        "client_secret": CLIENT_SECRET,
-        "redirect_uris": ["http://localhost:8501"],
-        "javascript_origins": ["http://localhost:8501"]
-    }
+   "web": {
+    "client_id": CLIENT_ID,
+    "project_id": "map2id",
+    "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+    "token_uri": "https://oauth2.googleapis.com/token",
+    "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
+    "client_secret": CLIENT_SECRET,
+    "redirect_uris": ["https://map2id.streamlit.app"],
+    "javascript_origins": ["https://map2id.streamlit.app"]
+  }
 }
 
 SCOPES = ['https://www.googleapis.com/auth/drive.readonly']
 TOKEN_FILE = 'token.pkl'
-REDIRECT_URI = 'http://localhost:8501/'
+REDIRECT_URI = 'https://map2id.streamlit.app'
 
 # ---- Logging ----
 logging.basicConfig(level=logging.INFO)
