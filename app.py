@@ -1,19 +1,27 @@
 import streamlit as st
+
+# ---- PAGE CONFIG (MORA BITI PRVA STVAR) ----
+st.set_page_config(
+    page_title="Prenesi Google Drive kot ZIP", 
+    page_icon="📁", 
+    layout="wide"
+)
+
+# ---- OSTALI IMPORTS ----
 import pandas as pd
 import os
 import pickle
 import io
 import zipfile
+import logging
+from dotenv import load_dotenv
 import google.auth.transport.requests
 from google_auth_oauthlib.flow import Flow
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseDownload
-import logging
-import streamlit as st
-from dotenv import load_dotenv
-import google.auth.transport.requests
-from google_auth_oauthlib.flow import Flow
 
+# ---- INICIALIZACIJA ----
+st.title("📁 Google Drive ZIP: Preimenovanje map po CSV-u")
 
 # PRODUKCIJSKA KONFIGURACIJA
 CLIENT_ID = st.secrets["google"]["client_id"]
