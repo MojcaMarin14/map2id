@@ -2,29 +2,29 @@ import streamlit as st
 import pandas as pd
 import os
 import pickle
+import io
+import zipfile
 import google.auth.transport.requests
 from google_auth_oauthlib.flow import Flow
 from googleapiclient.discovery import build
-from streamlit.components.v1 import html
-import os
-from dotenv import load_dotenv
-from google_auth_oauthlib.flow import Flow
-import json
+from googleapiclient.http import MediaIoBaseDownload
+import logging
 
-# ---- CONFIG ----
+# ---- KONFIG ----
 CLIENT_SECRET_FILE = 'credentials.json'
-SCOPES = ['https://www.googleapis.com/auth/drive']
+SCOPES = ['https://www.googleapis.com/auth/drive.readonly']
 TOKEN_FILE = 'token.pkl'
+REDIRECT_URI = 'http://localhost:8501/'
 
-load_dotenv()
-CLIENT_ID = os.getenv("CLIENT_ID")
-API_KEY = os.getenv("API_KEY")
+# ---- Logging ----
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
+st.set_page_config(page_title="Prenesi Google Drive kot ZIP", page_icon="📁", layout="wide")
 
-st.set_page_config(page_title="Preimenovanje map v Drive", page_icon="📁")
-st.title("📁 Google Drive: Preimenovanje map po šifrah")
+st.title("📁 Google Drive ZIP: Preimenovanje map po CSV-u")
 
-# ---- AUTH ----
+# ---- TOKEN HANDLING ----
 def save_token(creds):
     with open(TOKEN_FILE, 'wb') as token:
         pickle.dump(creds, token)
@@ -41,180 +41,295 @@ def authorize():
         if creds and creds.expired and creds.refresh_token:
             creds.refresh(google.auth.transport.requests.Request())
         else:
-            client_config = {
-                "web": {
-                    "client_id": st.secrets["google"]["client_id"],
-                    "project_id": st.secrets["google"]["project_id"],
-                    "auth_uri": "https://accounts.google.com/o/oauth2/auth",
-                    "token_uri": "https://oauth2.googleapis.com/token",
-                    "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
-                    "client_secret": st.secrets["google"]["client_secret"],
-                    "redirect_uris": ["http://localhost:8501"],
-                    "javascript_origins": ["http://localhost:8501"]
-                }
-            }
-
-            flow = Flow.from_client_config(
-                client_config,
-                scopes=SCOPES,
-                redirect_uri='http://localhost:8501/'
-            )
-            auth_url, _ = flow.authorization_url(prompt='consent')
-            st.write(f"🔐 [Klikni tukaj za prijavo z Google računom]({auth_url})")
-            code = st.text_input("🔑 Po prijavi prilepi tukjer 'code' iz URL")
+            if not os.path.exists(CLIENT_SECRET_FILE):
+                st.error("⚠️ Manjka 'credentials.json'")
+                return None
+            flow = Flow.from_client_secrets_file(
+                CLIENT_SECRET_FILE, scopes=SCOPES, redirect_uri=REDIRECT_URI)
+            auth_url, _ = flow.authorization_url(prompt='consent', access_type='offline')
+            st.markdown(f"""
+                ### 🔐 Prijava
+                1. [Klikni za prijavo v Google]({auth_url})
+                2. Dovoli dostop do Google Drive
+                3. Prilepi kodo tukaj:
+            """)
+            code = st.text_input("🔑 Avtentikacijska koda")
             if code:
-                flow.fetch_token(code=code)
-                creds = flow.credentials
-                save_token(creds)
-                st.experimental_rerun()
+                try:
+                    flow.fetch_token(code=code)
+                    creds = flow.credentials
+                    save_token(creds)
+                    st.experimental_rerun()
+                except Exception as e:
+                    st.error(f"Napaka pri pridobivanju žetona: {e}")
+                    return None
     return creds
+
+# ---- CSV UPLOAD ----
+with st.expander("ℹ️ Navodila za uporabo", expanded=False):
+    st.markdown("""
+    **1. Naloži CSV datoteko**  
+    - CSV mora vsebovati stolpca `sifra` in `naziv`.  
+    - `naziv` ustreza imenu mape v Drive-u, `sifra` pa bo novo ime v ZIP-u.
+
+    **2. Vnesi ID glavne mape**  
+    - ID mape pridobiš iz URL-ja Google Drive (zadnji del povezave) text za "folders/"
+                
+
+    **3. Klikni 'Preimenuj prve ravni podmape v šifre'**  
+    - Sistem pripravi strukturo za ZIP.
+
+    **4. Klikni 'Obdelaj ZIP' za prenos**  
+    - ZIP bo vseboval mape s preimenovanimi šiframi.
+    - Vključene bodo le ustrezne datoteke:
+        - ✅ Slike (JPG, PNG, itd.)
+        - ✅ CE certifikati (vsebuje ločen zlog 'CE')
+        - ✅ Navodila v slovenščini (vsebina vsebuje 'slo', 'navodila', ipd. in je PDF/Word)
+    - Če katera od teh vrst manjka se mapi doda oznaka **'nepopolno'**.
+
+    **5. Prenesi ZIP**  
+    - Klikni gumb in prenesi datoteko na svoj računalnik.
+    """)
+st.sidebar.header("Naloži CSV datoteko")
+uploaded_csv = st.sidebar.file_uploader("Izberi CSV z 'sifra' in 'naziv'", type="csv")
+
+rename_map = {}
+
+if uploaded_csv:
+    try:
+        uploaded_csv.seek(0)
+        df = pd.read_csv(
+            uploaded_csv,
+            sep=',',
+            quotechar='"',
+            skipinitialspace=True,
+            engine="python"
+        )
+        if 'sifra' not in df.columns or 'naziv' not in df.columns:
+            raise ValueError("CSV mora vsebovati stolpca 'sifra' in 'naziv'")
+
+        rename_map = {
+            str(row['naziv']).strip(): str(row['sifra']).strip()
+            for _, row in df.iterrows()
+        }
+
+        st.sidebar.success(f"Naloženih {len(rename_map)} vnosov za preimenovanje.")
+        st.sidebar.markdown("**Vsebina CSV:**")
+        st.sidebar.dataframe(df)
+    except Exception as e:
+        st.sidebar.error(f"Napaka pri CSV: {e}")
+        st.stop()
+else:
+    st.sidebar.info("Naloži CSV z 'sifra' in 'naziv' za preimenovanje.")
+
+# ---- DRIVE AUTORIZACIJA ----
+folder_id = st.text_input("📂 Vnesi Google Drive ID glavne mape (ne podmape):")
 
 creds = authorize()
 if not creds or not creds.valid:
     st.stop()
+    
 
-service = build('drive', 'v3', credentials=creds)
-
-# ---- GOOGLE DRIVE PICKER ----
-def google_drive_picker():
-    st.markdown("### Izberi mapo iz svojega Google Drive")
-
-    if st.button("Izberi mapo"):
-        picker_html = f"""
-        <html>
-          <head>
-            <script type="text/javascript" src="https://apis.google.com/js/api.js"></script>
-            <script type="text/javascript">
-
-              function onApiLoad() {{
-                gapi.load('picker', {{'callback': createPicker}});
-              }}
-
-              function createPicker() {{
-                var picker = new google.picker.PickerBuilder()
-                  .addView(google.picker.ViewId.FOLDERS)
-                  .setOAuthToken("{creds.token}")
-                  .setDeveloperKey("{API_KEY}")
-                  .setCallback(pickerCallback)
-                  .build();
-                picker.setVisible(true);
-              }}
-
-              function pickerCallback(data) {{
-                if (data.action == google.picker.Action.PICKED) {{
-                  var folderId = data.docs[0].id;
-                  window.parent.postMessage({{ 'selected_folder': folderId }}, "*");
-                }}
-              }}
-
-              window.onload = onApiLoad;
-            </script>
-          </head>
-          <body></body>
-        </html>
-        """
-        html(picker_html, height=600)
-
-# Prejem ID izbrane mape iz Google Picker (JavaScript -> Python)
-js_listener = """
-<script>
-window.addEventListener("message", (event) => {
-  if(event.data && event.data.selected_folder) {
-    const params = new URLSearchParams(window.location.search);
-    params.set("selected_folder", event.data.selected_folder);
-    window.history.replaceState({}, "", `${location.pathname}?${params}`);
-    window.location.reload();
-  }
-});
-</script>
-"""
-html(js_listener)
-
-selected_folder = st.query_params.get("selected_folder", [None])[0]
-
-
-if not selected_folder:
-    google_drive_picker()
-    st.warning("Najprej izberi mapo, kjer želiš iskati in preimenovati podmape.")
+try:
+    service = build('drive', 'v3', credentials=creds, static_discovery=False)
+except Exception as e:
+    st.error(f"Napaka pri povezavi z Google Drive: {e}")
     st.stop()
 
-st.success(f"Izbrana mapa ID: {selected_folder}")
+    
 
-# ---- REKURZIVNO ISKANJE MAP ZNOTRAJ IZBRANE MAPE ----
-def find_folders_recursive(service, parent_id):
-    folders = {}
-    query = f"mimeType='application/vnd.google-apps.folder' and '{parent_id}' in parents"
-    page_token = None
-    while True:
-        response = service.files().list(
-            q=query,
-            fields="nextPageToken, files(id, name)",
-            supportsAllDrives=True,
-            includeItemsFromAllDrives=True,
-            corpora='allDrives',
-            pageToken=page_token
-        ).execute()
+# ---- FUNKCIJE ----
+def list_folders_in_folder(service, folder_id):
+    """Vrne seznam prvih ravni podmap glavne mape."""
+    query = f"'{folder_id}' in parents and trashed = false and mimeType = 'application/vnd.google-apps.folder'"
+    response = service.files().list(
+        q=query,
+        fields="files(id, name)",
+        supportsAllDrives=True,
+        includeItemsFromAllDrives=True
+    ).execute()
+    return response.get("files", [])
 
-        files = response.get('files', [])
-        for f in files:
-            folders[f['name']] = f['id']
-            subfolders = find_folders_recursive(service, f['id'])
-            folders.update(subfolders)
+def list_all_files_and_folders(service, folder_id, path_prefix=""):
+    """Rekurzivno poišče vse podmape in datoteke, vrne seznam (pot, file_id) za datoteke."""
+    # Najprej poišči podmape
+    folders_query = f"'{folder_id}' in parents and trashed = false and mimeType = 'application/vnd.google-apps.folder'"
+    folders_res = service.files().list(q=folders_query,
+                                       fields="files(id, name)",
+                                       supportsAllDrives=True,
+                                       includeItemsFromAllDrives=True).execute()
+    folders = folders_res.get("files", [])
 
-        page_token = response.get('nextPageToken', None)
-        if not page_token:
-            break
+    # Poišči datoteke v trenutni mapi
+    files_query = f"'{folder_id}' in parents and trashed = false and mimeType != 'application/vnd.google-apps.folder'"
+    files_res = service.files().list(q=files_query,
+                                     fields="files(id, name)",
+                                     supportsAllDrives=True,
+                                     includeItemsFromAllDrives=True).execute()
+    files = files_res.get("files", [])
 
-    return folders
+    content = []
 
-# ---- NALOŽI CSV IN PREIMENUJ ----
-uploaded_file = st.file_uploader("📥 Naloži CSV z naziv in šifra", type="csv")
+    for folder in folders:
+        folder_path = os.path.join(path_prefix, folder['name'])
+        content.extend(list_all_files_and_folders(service, folder['id'], folder_path))
 
-if uploaded_file:
-    try:
-        df = pd.read_csv(uploaded_file)
-        if 'naziv' not in df.columns or 'sifra' not in df.columns:
-            raise ValueError("Nepravilni stolpci")
-    except:
-        uploaded_file.seek(0)
-        df = pd.read_csv(uploaded_file, header=None)
-        df = df[0].str.split(',', n=1, expand=True)
-        df.columns = ['sifra', 'naziv']
+    for file in files:
+        file_path = os.path.join(path_prefix, file['name'])
+        content.append((file_path, file['id']))
 
-    if 'naziv' not in df.columns or 'sifra' not in df.columns:
-        st.error("⚠️ CSV mora imeti stolpca z imeni `sifra` in `naziv`.")
-        st.stop()
+    return content
 
-    renamed = []
+def download_and_zip_with_renamed_first_level(service, main_folder_id, rename_map):
+    first_level_folders = list_folders_in_folder(service, main_folder_id)
 
-    # Najprej dobi vse mape znotraj izbrane mape
-    all_folders = find_folders_recursive(service, selected_folder)
+    def is_allowed_file(file_name):
+        name_lower = file_name.lower()
+        is_image = name_lower.endswith(('.jpg', '.jpeg', '.png', '.bmp', '.gif', '.tiff', '.webp'))
 
-    # Dodaj tudi samo izbrano mapo, če je slučajno v CSV-ju
-    folder_info = service.files().get(fileId=selected_folder, fields="id, name").execute()
-    all_folders[folder_info['name']] = folder_info['id']
+        is_ce = 'ce' in file_name and not any(part.lower() == 'certificate' for part in file_name.lower().split())
+        is_ce_strict = 'ce' in [part.strip().lower() for part in ''.join(c if c.isalnum() else ' ' for c in file_name).split()]
 
-    for i, row in df.iterrows():
-        naziv = row['naziv']
-        sifra = str(row['sifra'])
+        is_navodilo = any(kw in name_lower for kw in ['navodila za uporabo', 'navodila', 'slo']) and \
+                      name_lower.endswith(('.pdf', '.doc', '.docx', '.odt'))
 
-        if naziv not in all_folders:
-            st.warning(f"⚠️ Mapa '{naziv}' ni bila najdena v izbrani mapi ali njenih podmapah.")
-            continue
+        return is_image or is_ce_strict or is_navodilo
 
-        folder_id = all_folders[naziv]
+    def categorize_file(file_name):
+        name_lower = file_name.lower()
+        is_image = name_lower.endswith(('.jpg', '.jpeg', '.png', '.bmp', '.gif', '.tiff', '.webp'))
+        is_ce_strict = 'ce' in [part.strip().lower() for part in ''.join(c if c.isalnum() else ' ' for c in file_name).split()]
+        is_navodilo = any(kw in name_lower for kw in ['navodila za uporabo', 'navodila', 'slo']) and \
+                      name_lower.endswith(('.pdf', '.doc', '.docx', '.odt'))
+        return is_image, is_ce_strict, is_navodilo
 
-        # Preimenuj mapo
-        service.files().update(
-            fileId=folder_id,
-            body={"name": sifra}
-        ).execute()
+    def get_all_files(service, folder_id, path_prefix=""):
+        folders_query = f"'{folder_id}' in parents and trashed = false and mimeType = 'application/vnd.google-apps.folder'"
+        folders_res = service.files().list(q=folders_query,
+                                           fields="files(id, name)",
+                                           supportsAllDrives=True,
+                                           includeItemsFromAllDrives=True).execute()
+        folders = folders_res.get("files", [])
 
-        renamed.append((naziv, sifra))
+        files_query = f"'{folder_id}' in parents and trashed = false and mimeType != 'application/vnd.google-apps.folder'"
+        files_res = service.files().list(q=files_query,
+                                         fields="files(id, name)",
+                                         supportsAllDrives=True,
+                                         includeItemsFromAllDrives=True).execute()
+        files = files_res.get("files", [])
 
-    if renamed:
-        result_df = pd.DataFrame(renamed, columns=["Stari naziv", "Nova šifra"])
-        st.success("🎉 Preimenovanje uspešno!")
-        st.dataframe(result_df)
-        csv = result_df.to_csv(index=False).encode("utf-8")
-        st.download_button("⬇️ Prenesi poročilo", data=csv, file_name="rezultat.csv", mime="text/csv")
+        content = []
+
+        for folder in folders:
+            folder_path = os.path.join(path_prefix, folder['name'])
+            content.extend(get_all_files(service, folder['id'], folder_path))
+
+        for file in files:
+            file_path = os.path.join(path_prefix, file['name'])
+            content.append((file_path, file['id'], file['name']))
+
+        return content
+
+    zip_buffer = io.BytesIO()
+    with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zipf:
+        for folder in first_level_folders:
+            original_name = folder['name']
+            folder_id = folder['id']
+            sifra = rename_map.get(original_name.strip(), original_name.strip())
+
+            files = get_all_files(service, folder_id)
+
+            allowed_files = []
+            found_image = found_ce = found_navodilo = False
+
+            for path, file_id, file_name in files:
+                is_image, is_ce, is_navodilo = categorize_file(file_name)
+
+                if is_image or is_ce or is_navodilo:
+                    allowed_files.append((path, file_id, file_name))
+                    found_image = found_image or is_image
+                    found_ce = found_ce or is_ce
+                    found_navodilo = found_navodilo or is_navodilo
+
+            is_complete = found_image and found_ce and found_navodilo
+            if not is_complete:
+                sifra += " nepopolno"
+
+            for path, file_id, file_name in allowed_files:
+                # Spremeni pot da začne z novo šifro
+                adjusted_path = os.path.join(sifra, os.path.relpath(path, start=original_name))
+
+                try:
+                    request = service.files().get_media(fileId=file_id)
+                    fh = io.BytesIO()
+                    downloader = MediaIoBaseDownload(fh, request)
+                    done = False
+                    while not done:
+                        status, done = downloader.next_chunk()
+                    fh.seek(0)
+                    data = fh.read()
+                    if data:
+                        zipf.writestr(adjusted_path, data)
+                except Exception as e:
+                    st.warning(f"Napaka pri prenosu datoteke: {file_name} ({e})")
+
+    zip_buffer.seek(0)
+    return zip_buffer
+
+
+# ---- UI LOGIKA ----
+st.markdown("---")
+
+if folder_id:
+    st.success(f"Izbrana glavna mapa z ID: `{folder_id}`")
+    st.session_state['folder_id'] = folder_id
+    st.session_state['rename_map'] = rename_map
+
+    # Prikažemo samo nazive brez šifre
+    with st.spinner("Pridobivanje prvih ravni map..."):
+        try:
+            first_level_folders = list_folders_in_folder(service, folder_id)
+            folder_names = [f['name'].strip() for f in first_level_folders]
+
+            # Najdemo nazive brez šifre
+            missing_shifra = [name for name in folder_names if name not in rename_map]
+
+            if missing_shifra:
+                st.warning("⚠️ Naslednji nazivi nimajo pripadajoče šifre v CSV-ju:")
+                st.dataframe(pd.DataFrame(missing_shifra, columns=["Naziv brez šifre"]))
+            else:
+                st.success("✅ Vsi nazivi imajo pripadajoče šifre v CSV-ju.")
+
+        except Exception as e:
+            st.error(f"Napaka pri branju podmap: {e}")
+
+    st.markdown("---")
+
+    if st.button("🔄 Preimenuj prve ravni podmape v šifre"):
+        if not rename_map:
+            st.warning("Naloži CSV z 'sifra' in 'naziv' za preimenovanje.")
+        else:
+            st.session_state['ready_for_zip'] = True
+            st.success("Prve ravni podmape so pripravljene za preimenovanje v ZIP.")
+
+if st.session_state.get('ready_for_zip', False):
+    if st.button("📦 Ustvari ZIP z novimi imeni"):
+        try:
+            with st.spinner("Pridobivanje in zipanje datotek..."):
+                zip_stream = download_and_zip_with_renamed_first_level(
+                    service,
+                    st.session_state['folder_id'],
+                    st.session_state['rename_map']
+                )
+            st.success("✅ ZIP je pripravljen za prenos!")
+            st.download_button(
+                label="⬇️ Prenesi ZIP datoteko",
+                data=zip_stream,
+                file_name="drive_mape_preimenovane.zip",
+                mime="application/zip"
+            )
+        except Exception as e:
+            st.error(f"Napaka pri ustvarjanju ZIP-a: {e}")
+            logger.error(f"ZIP napaka: {e}")
+else:
+    st.info("Vnesi ID glavne mape in naloži CSV, nato klikni gumb za preimenovanje.")
