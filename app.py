@@ -51,8 +51,7 @@ st.write(f"Production Redirect URI: {REDIRECT_URI}")
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-st.set_page_config(page_title="Prenesi Google Drive kot ZIP", page_icon="📁", layout="wide")
-st.title("📁 Google Drive ZIP: Preimenovanje map po CSV-u")
+
 
 # ---- TOKEN HANDLING ----
 def save_token(creds):
