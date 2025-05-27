@@ -39,9 +39,18 @@ if creds and folder_id and rename_map:
     service = build_drive_service(creds)
 
     with st.spinner("🔍 Pridobivam mape..."):
-        folders = list_folders_in_folder(service, folder_id)
-        names = [f['name'].strip() for f in folders]
-        manjkajoce = [n for n in names if n not in rename_map]
+        try:
+            folders = list_folders_in_folder(service, folder_id)
+        except Exception as e:
+            st.error(f"❌ Napaka pri pridobivanju map. Preveri, če je ID pravilen.\nNapaka: {e}")
+            st.stop()
+
+    if not folders:
+        st.warning("⚠️ Ni najdenih podmap. Preveri, če je ID pravilen in če mapa vsebuje podmape.")
+        st.stop()
+
+    names = [f['name'].strip() for f in folders]
+    manjkajoce = [n for n in names if n not in rename_map]
 
     if manjkajoce:
         st.warning("⚠️ Mape brez ujemajoče šifre v CSV-ju:")
@@ -61,5 +70,3 @@ if creds and folder_id and rename_map:
             mime="application/zip",
             use_container_width=True
         )
-else:
-    st.info("Za začetek: prijavi se, naloži CSV in vnesi ID mape.")
