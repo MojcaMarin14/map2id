@@ -35,21 +35,22 @@ CLIENT_SECRET_CONFIG = {
 }
 
 def authorize():
-    creds = st.session_state.get("google_creds")
+    creds_json = st.session_state.get("google_creds")
 
-    if creds:
-        creds = Credentials.from_authorized_user_info(creds)
-        if creds.valid:
-            return creds
-        elif creds.expired and creds.refresh_token:
-            try:
+    if creds_json:
+        try:
+            creds = Credentials.from_authorized_user_info(eval(creds_json))  # pretvori nazaj v dict
+            if creds.valid:
+                return creds
+            elif creds.expired and creds.refresh_token:
                 creds.refresh(google.auth.transport.requests.Request())
                 st.session_state["google_creds"] = creds.to_json()
                 return creds
-            except Exception as e:
-                st.warning("🔁 Žeton ni bil osvežen. Prijavi se znova.")
-                st.session_state.pop("google_creds", None)
+        except Exception as e:
+            st.warning("🔁 Napaka pri branju obstoječih poverilnic. Prijavi se znova.")
+            st.session_state.pop("google_creds", None)
 
+    # Ni poverilnic, začni nov OAuth flow
     flow = Flow.from_client_config(
         CLIENT_SECRET_CONFIG,
         scopes=SCOPES,
@@ -68,7 +69,7 @@ def authorize():
         ### 🔐 Prijava v Google  
         1. [Klikni tukaj za prijavo]({auth_url})  
         2. Dovoli dostop do Google Drive  
-        3. Kopiraj `code` iz URL-ja (parametrski del po `?code=...`)  
+        3. Kopiraj `code` iz URL-ja (po `?code=`)  
         4. Prilepi ga spodaj:
         """)
         code = st.text_input("Prilepi kodo iz URL", key="auth_code")
